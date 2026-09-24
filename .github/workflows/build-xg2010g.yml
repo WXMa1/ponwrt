@@ -20,45 +20,33 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # ============================================================
-      # 1. 拉取当前 PonWrt 仓库
-      # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-
-      # ============================================================
-      # 2. 清理 GitHub Actions 磁盘空间
-      # ============================================================
       - name: Free disk space
         shell: bash
         run: |
+          set -e
           echo "========== Disk before =========="
           df -h
-
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-
           sudo apt-get clean
-
           echo ""
           echo "========== Disk after =========="
           df -h
 
-
-      # ============================================================
-      # 3. 安装 ImmortalWrt / OpenWrt 编译环境
-      # ============================================================
       - name: Install build dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
+        shell: bash
         run: |
+          set -e
           sudo apt-get update
-
           sudo apt-get install -y \
             build-essential \
             clang \
@@ -94,646 +82,406 @@ jobs:
             make \
             sed
 
-
-      # ============================================================
-      # 4. 添加 PassWall 官方 feeds
-      #
-      # 使用 PassWall 官方推荐方式：
-      # openwrt-passwall-packages
-      # openwrt-passwall
-      # ============================================================
       - name: Add PassWall feeds
         shell: bash
         run: |
           set -e
-
           echo "========== Original feeds =========="
           cat feeds.conf.default
-
-          # 防止之前已经添加过导致重复
-          sed -i \
-            '/Openwrt-Passwall\/openwrt-passwall-packages/d' \
-            feeds.conf.default
-
-          sed -i \
-            '/Openwrt-Passwall\/openwrt-passwall.git/d' \
-            feeds.conf.default
-
-          sed -i \
-            '/Openwrt-Passwall\/openwrt-passwall;/d' \
-            feeds.conf.default
-
+          sed -i '/Openwrt-Passwall\/openwrt-passwall-packages/d' feeds.conf.default
+          sed -i '/Openwrt-Passwall\/openwrt-passwall.git/d' feeds.conf.default
+          sed -i '/Openwrt-Passwall\/openwrt-passwall;/d' feeds.conf.default
           {
             echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main'
             echo 'src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main'
             cat feeds.conf.default
           } > feeds.conf.default.new
-
           mv feeds.conf.default.new feeds.conf.default
-
           echo ""
           echo "========== Final feeds =========="
           cat feeds.conf.default
 
-
-      # ============================================================
-      # 5. 更新全部 feeds
-      # ============================================================
       - name: Update feeds
         shell: bash
         run: |
           set -e
-
           ./scripts/feeds update -a
 
-
-      # ============================================================
-      # 6. 安装全部 feeds
-      # ============================================================
       - name: Install feeds
         shell: bash
         run: |
           set -e
-
           ./scripts/feeds install -a
 
-
-      # ============================================================
-      # 7. 添加 Lucky
-      #
-      # Lucky 官方 OpenWrt 移植：
-      # https://github.com/sirpdboy/luci-app-lucky
-      #
-      # 仓库内同时包含：
-      # lucky
-      # luci-app-lucky
-      # ============================================================
       - name: Add Lucky
         shell: bash
         run: |
           set -e
-
           rm -rf package/lucky
-
           git clone \
             --depth 1 \
             https://github.com/sirpdboy/luci-app-lucky.git \
             package/lucky
+          echo "========== Lucky package Makefiles =========="
+          find package/lucky -maxdepth 2 -name Makefile -print
 
-          echo ""
-          echo "========== Lucky packages =========="
-
-          find package/lucky \
-            -maxdepth 2 \
-            -name Makefile \
-            -print
-
-
-      # ============================================================
-      # 8. 载入 PonWrt 作者原始 AN7581 配置
-      # ============================================================
       - name: Load PonWrt AN7581 config
         shell: bash
         run: |
           set -e
-
           if [ ! -f "configs/an7581.config" ]; then
             echo "::error::configs/an7581.config not found"
             exit 1
           fi
-
           cp configs/an7581.config .config
+          echo "Loaded configs/an7581.config"
 
-          echo "Original AN7581 config loaded."
-
-
-      # ============================================================
-      # 9. 强制改成仅编译 Gemtek XG2010G
-      #
-      # 原 configs/an7581.config 是 MULTI_PROFILE
-      # 这里删除其他设备选择，只留下：
-      #
-      # Airoha
-      #   -> AN7581
-      #      -> Gemtek XG2010G
-      # ============================================================
       - name: Select XG2010G only
         shell: bash
         run: |
           set -e
+          sed -i -E '/^(# )?CONFIG_TARGET_MULTI_PROFILE/d' .config
+          sed -i -E '/^(# )?CONFIG_TARGET_PER_DEVICE_ROOTFS/d' .config
+          sed -i -E '/^(# )?CONFIG_TARGET_airoha_an7581_DEVICE_/d' .config
+          sed -i -E '/^(# )?CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_/d' .config
+          sed -i -E '/^CONFIG_TARGET_DEVICE_PACKAGES_airoha_an7581_DEVICE_/d' .config
+          sed -i '/^CONFIG_TARGET_PROFILE=/d' .config
+          echo '# CONFIG_TARGET_MULTI_PROFILE is not set' >> .config
+          echo 'CONFIG_TARGET_airoha=y' >> .config
+          echo 'CONFIG_TARGET_airoha_an7581=y' >> .config
+          echo 'CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g=y' >> .config
+          echo 'CONFIG_TARGET_PROFILE="DEVICE_gemtek_xg2010g"' >> .config
+          echo "========== Selected target =========="
+          grep -E '^CONFIG_TARGET_(airoha|PROFILE)' .config | tail -30 || true
 
-          echo "========== Remove multi-profile settings =========="
-
-          # 删除 MULTI PROFILE 设置
-          sed -i -E \
-            '/^(# )?CONFIG_TARGET_MULTI_PROFILE/d' \
-            .config
-
-          sed -i -E \
-            '/^(# )?CONFIG_TARGET_PER_DEVICE_ROOTFS/d' \
-            .config
-
-          # 删除所有 AN7581 单 Profile 选择
-          sed -i -E \
-            '/^(# )?CONFIG_TARGET_airoha_an7581_DEVICE_/d' \
-            .config
-
-          # 删除 MULTI_PROFILE 下所有设备选择
-          sed -i -E \
-            '/^(# )?CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_/d' \
-            .config
-
-          sed -i -E \
-            '/^CONFIG_TARGET_DEVICE_PACKAGES_airoha_an7581_DEVICE_/d' \
-            .config
-
-          # 删除旧 target profile
-          sed -i \
-            '/^CONFIG_TARGET_PROFILE=/d' \
-            .config
-
-          # 指定唯一设备
-          cat >> .config <<'EOF'
-
-          # XG2010G single target
-          # CONFIG_TARGET_MULTI_PROFILE is not set
-          CONFIG_TARGET_airoha=y
-          CONFIG_TARGET_airoha_an7581=y
-          CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g=y
-          CONFIG_TARGET_PROFILE="DEVICE_gemtek_xg2010g"
-          EOF
-
-          echo ""
-          echo "========== XG2010G target =========="
-
-          grep -E \
-            'CONFIG_TARGET_(airoha|PROFILE)' \
-            .config \
-            | tail -30 || true
-
-
-      # ============================================================
-      # 10. 开启插件
-      # ============================================================
-      - name: Enable packages
+      - name: Configure packages
         shell: bash
         run: |
           set -e
 
           set_config_y() {
-
-            SYMBOL="$1"
-
+            local symbol="$1"
             sed -i \
-              -e "/^${SYMBOL}=.*/d" \
-              -e "/^# ${SYMBOL} is not set$/d" \
+              -e "/^${symbol}=.*/d" \
+              -e "/^# ${symbol} is not set$/d" \
               .config
-
-            echo "${SYMBOL}=y" >> .config
+            echo "${symbol}=y" >> .config
           }
 
+          set_config_n() {
+            local symbol="$1"
+            sed -i \
+              -e "/^${symbol}=.*/d" \
+              -e "/^# ${symbol} is not set$/d" \
+              .config
+            echo "# ${symbol} is not set" >> .config
+          }
 
           echo "=============================================="
-          echo " LuCI / 中文"
+          echo " LuCI / Chinese"
           echo "=============================================="
-
           set_config_y CONFIG_PACKAGE_luci
           set_config_y CONFIG_LUCI_LANG_zh_Hans
-
 
           echo "=============================================="
           echo " XG2010G PON"
           echo "=============================================="
-
-          # 保证 PonWrt 的 PON 管理功能存在
           set_config_y CONFIG_PACKAGE_luci-app-pon
           set_config_y CONFIG_PACKAGE_airoha-ponctl
           set_config_y CONFIG_PACKAGE_airoha-pond
 
-
           echo "=============================================="
-          echo " PassWall"
+          echo " PassWall - heavy-use profile"
           echo "=============================================="
-
           set_config_y CONFIG_PACKAGE_luci-app-passwall
-
-          # 当前 PonWrt 使用 Firewall4，因此使用 nftables
           set_config_y CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy
-
-          # 常用 PassWall 核心
           set_config_y CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray
           set_config_y CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox
           set_config_y CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Geoview
+          set_config_y CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Geoview
           set_config_y CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin
           set_config_y CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client
-
-          # 中文
           set_config_y CONFIG_PACKAGE_luci-i18n-passwall-zh-cn
-
 
           echo "=============================================="
           echo " Lucky"
           echo "=============================================="
-
           set_config_y CONFIG_PACKAGE_lucky
           set_config_y CONFIG_PACKAGE_luci-app-lucky
           set_config_y CONFIG_PACKAGE_luci-i18n-lucky-zh-cn
 
-
-          echo "=============================================="
-          echo " DDNS-GO"
-          echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_ddns-go
-          set_config_y CONFIG_PACKAGE_luci-app-ddns-go
-          set_config_y CONFIG_PACKAGE_luci-i18n-ddns-go-zh-cn
-
-
           echo "=============================================="
           echo " AdGuard Home"
           echo "=============================================="
-
           set_config_y CONFIG_PACKAGE_adguardhome
           set_config_y CONFIG_PACKAGE_luci-app-adguardhome
           set_config_y CONFIG_PACKAGE_luci-i18n-adguardhome-zh-cn
 
-
           echo "=============================================="
-          echo " MWAN3"
+          echo " MWAN3 - package only, no preset policy"
           echo "=============================================="
-
           set_config_y CONFIG_PACKAGE_mwan3
           set_config_y CONFIG_PACKAGE_luci-app-mwan3
           set_config_y CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn
 
-
-          echo "=============================================="
-          echo " SQM"
-          echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_sqm-scripts
-          set_config_y CONFIG_PACKAGE_luci-app-sqm
-          set_config_y CONFIG_PACKAGE_luci-i18n-sqm-zh-cn
-
-
-          echo "=============================================="
-          echo " UPnP"
-          echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_luci-app-upnp
-          set_config_y CONFIG_PACKAGE_luci-i18n-upnp-zh-cn
-
-
-          echo "=============================================="
-          echo " Web SSH / ttyd"
-          echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_ttyd
-          set_config_y CONFIG_PACKAGE_luci-app-ttyd
-          set_config_y CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn
-
-
-          echo "=============================================="
-          echo " Wake On LAN"
-          echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_etherwake
-          set_config_y CONFIG_PACKAGE_luci-app-wol
-          set_config_y CONFIG_PACKAGE_luci-i18n-wol-zh-cn
-
-
-          echo "=============================================="
-          echo " 流量统计"
-          echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_nlbwmon
-          set_config_y CONFIG_PACKAGE_luci-app-nlbwmon
-          set_config_y CONFIG_PACKAGE_luci-i18n-nlbwmon-zh-cn
-
-
           echo "=============================================="
           echo " Samba4"
           echo "=============================================="
-
           set_config_y CONFIG_PACKAGE_samba4-server
           set_config_y CONFIG_PACKAGE_luci-app-samba4
           set_config_y CONFIG_PACKAGE_luci-i18n-samba4-zh-cn
 
-
-          echo "=============================================="
-          echo " ACME / Let's Encrypt"
-          echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_acme
-          set_config_y CONFIG_PACKAGE_luci-app-acme
-          set_config_y CONFIG_PACKAGE_luci-i18n-acme-zh-cn
-
-
           echo "=============================================="
           echo " WireGuard"
           echo "=============================================="
-
           set_config_y CONFIG_PACKAGE_wireguard-tools
           set_config_y CONFIG_PACKAGE_luci-proto-wireguard
 
-
           echo "=============================================="
-          echo " NATMap"
+          echo " Useful services"
           echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_natmap
-          set_config_y CONFIG_PACKAGE_luci-app-natmap
-          set_config_y CONFIG_PACKAGE_luci-i18n-natmap-zh-cn
-
-
-          echo "=============================================="
-          echo " WatchCat"
-          echo "=============================================="
-
+          set_config_y CONFIG_PACKAGE_luci-app-upnp
+          set_config_y CONFIG_PACKAGE_luci-i18n-upnp-zh-cn
+          set_config_y CONFIG_PACKAGE_ttyd
+          set_config_y CONFIG_PACKAGE_luci-app-ttyd
+          set_config_y CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn
+          set_config_y CONFIG_PACKAGE_etherwake
+          set_config_y CONFIG_PACKAGE_luci-app-wol
+          set_config_y CONFIG_PACKAGE_luci-i18n-wol-zh-cn
+          set_config_y CONFIG_PACKAGE_nlbwmon
+          set_config_y CONFIG_PACKAGE_luci-app-nlbwmon
+          set_config_y CONFIG_PACKAGE_luci-i18n-nlbwmon-zh-cn
           set_config_y CONFIG_PACKAGE_watchcat
           set_config_y CONFIG_PACKAGE_luci-app-watchcat
           set_config_y CONFIG_PACKAGE_luci-i18n-watchcat-zh-cn
 
-
           echo "=============================================="
-          echo " 常用网络工具"
+          echo " Network diagnostics"
           echo "=============================================="
-
-          set_config_y CONFIG_PACKAGE_curl
-          set_config_y CONFIG_PACKAGE_htop
-          set_config_y CONFIG_PACKAGE_iperf3
+          set_config_y CONFIG_PACKAGE_ip-full
+          set_config_y CONFIG_PACKAGE_ethtool-full
           set_config_y CONFIG_PACKAGE_tcpdump
+          set_config_y CONFIG_PACKAGE_iperf3
+          set_config_y CONFIG_PACKAGE_curl
+          set_config_y CONFIG_PACKAGE_bind-dig
+          set_config_y CONFIG_PACKAGE_mtr-nojson
           set_config_y CONFIG_PACKAGE_ca-bundle
           set_config_y CONFIG_PACKAGE_ca-certificates
 
+          echo "=============================================="
+          echo " Explicitly remove duplicated/unneeded packages"
+          echo "=============================================="
+          set_config_n CONFIG_PACKAGE_ddns-go
+          set_config_n CONFIG_PACKAGE_luci-app-ddns-go
+          set_config_n CONFIG_PACKAGE_luci-i18n-ddns-go-zh-cn
+          set_config_n CONFIG_PACKAGE_sqm-scripts
+          set_config_n CONFIG_PACKAGE_luci-app-sqm
+          set_config_n CONFIG_PACKAGE_luci-i18n-sqm-zh-cn
+          set_config_n CONFIG_PACKAGE_natmap
+          set_config_n CONFIG_PACKAGE_luci-app-natmap
+          set_config_n CONFIG_PACKAGE_luci-i18n-natmap-zh-cn
+          set_config_n CONFIG_PACKAGE_acme
+          set_config_n CONFIG_PACKAGE_luci-app-acme
+          set_config_n CONFIG_PACKAGE_luci-i18n-acme-zh-cn
+          set_config_n CONFIG_PACKAGE_luci-app-diskman
+          set_config_n CONFIG_PACKAGE_mosdns
+          set_config_n CONFIG_PACKAGE_luci-app-mosdns
+          set_config_n CONFIG_PACKAGE_luci-app-openclash
+          set_config_n CONFIG_PACKAGE_luci-app-passwall2
+          set_config_n CONFIG_PACKAGE_pbr
+          set_config_n CONFIG_PACKAGE_luci-app-pbr
 
           echo ""
           echo "=============================================="
           echo " Running make defconfig"
           echo "=============================================="
-
           make defconfig
 
-
-      # ============================================================
-      # 11. 检查是不是只选择了 XG2010G
-      # ============================================================
       - name: Verify XG2010G target
         shell: bash
         run: |
           set -e
-
-          echo "=============================================="
-          echo " Target check"
-          echo "=============================================="
-
-          if ! grep -q \
-            '^CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g=y$' \
-            .config; then
-
-            echo "::error::XG2010G target is NOT selected!"
+          if ! grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g=y$' .config; then
+            echo "::error::XG2010G target is NOT selected"
             exit 1
-
           fi
-
-
           if grep -q '^CONFIG_TARGET_MULTI_PROFILE=y$' .config; then
-
-            echo "::error::MULTI_PROFILE is still enabled!"
+            echo "::error::MULTI_PROFILE is still enabled"
             exit 1
-
           fi
+          echo "XG2010G target OK"
 
-
-          echo ""
-          echo "Selected target:"
-
-          grep -E \
-            '^CONFIG_TARGET_(airoha|PROFILE)' \
-            .config \
-            | head -30
-
-          echo ""
-          echo "XG2010G OK."
-
-
-      # ============================================================
-      # 12. 检查主要插件
-      # ============================================================
-      - name: Verify required packages
+      - name: Verify package selection
         shell: bash
         run: |
           set -e
 
           REQUIRED_PACKAGES=(
             "CONFIG_PACKAGE_luci-app-passwall"
+            "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray"
+            "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox"
             "CONFIG_PACKAGE_lucky"
             "CONFIG_PACKAGE_luci-app-lucky"
-            "CONFIG_PACKAGE_ddns-go"
-            "CONFIG_PACKAGE_luci-app-ddns-go"
             "CONFIG_PACKAGE_adguardhome"
             "CONFIG_PACKAGE_luci-app-adguardhome"
             "CONFIG_PACKAGE_mwan3"
             "CONFIG_PACKAGE_luci-app-mwan3"
+            "CONFIG_PACKAGE_samba4-server"
+            "CONFIG_PACKAGE_luci-app-samba4"
+            "CONFIG_PACKAGE_wireguard-tools"
+            "CONFIG_PACKAGE_luci-proto-wireguard"
+            "CONFIG_PACKAGE_luci-app-ttyd"
+            "CONFIG_PACKAGE_luci-app-nlbwmon"
+            "CONFIG_PACKAGE_luci-app-watchcat"
+            "CONFIG_PACKAGE_ip-full"
+            "CONFIG_PACKAGE_ethtool-full"
+            "CONFIG_PACKAGE_tcpdump"
+            "CONFIG_PACKAGE_iperf3"
+            "CONFIG_PACKAGE_bind-dig"
+            "CONFIG_PACKAGE_mtr-nojson"
+          )
+
+          FORBIDDEN_PACKAGES=(
+            "CONFIG_PACKAGE_ddns-go"
+            "CONFIG_PACKAGE_luci-app-ddns-go"
+            "CONFIG_PACKAGE_luci-app-sqm"
+            "CONFIG_PACKAGE_natmap"
+            "CONFIG_PACKAGE_luci-app-natmap"
+            "CONFIG_PACKAGE_acme"
+            "CONFIG_PACKAGE_luci-app-acme"
+            "CONFIG_PACKAGE_luci-app-diskman"
+            "CONFIG_PACKAGE_mosdns"
+            "CONFIG_PACKAGE_luci-app-openclash"
+            "CONFIG_PACKAGE_luci-app-passwall2"
+            "CONFIG_PACKAGE_pbr"
+            "CONFIG_PACKAGE_luci-app-pbr"
           )
 
           ERROR=0
 
-          echo "=============================================="
-          echo " Required package check"
-          echo "=============================================="
-
-          for SYMBOL in "${REQUIRED_PACKAGES[@]}"; do
-
-            if grep -q "^${SYMBOL}=y$" .config; then
-
-              echo "OK     ${SYMBOL}"
-
+          echo "========== Required packages =========="
+          for symbol in "${REQUIRED_PACKAGES[@]}"; do
+            if grep -q "^${symbol}=y$" .config; then
+              echo "OK      ${symbol}"
             else
-
-              echo "::error::MISSING ${SYMBOL}"
+              echo "::error::MISSING ${symbol}"
               ERROR=1
-
             fi
-
           done
 
+          echo ""
+          echo "========== Removed packages =========="
+          for symbol in "${FORBIDDEN_PACKAGES[@]}"; do
+            if grep -q "^${symbol}=y$" .config; then
+              echo "::error::UNEXPECTED ${symbol}=y"
+              ERROR=1
+            else
+              echo "REMOVED ${symbol}"
+            fi
+          done
 
           echo ""
-          echo "=============================================="
-          echo " PassWall check"
-          echo "=============================================="
-
-          grep '^CONFIG_PACKAGE_luci-app-passwall' \
-            .config || true
-
+          echo "========== PassWall options =========="
+          grep '^CONFIG_PACKAGE_luci-app-passwall' .config || true
 
           echo ""
-          echo "=============================================="
-          echo " Main LuCI applications"
-          echo "=============================================="
-
+          echo "========== Main LuCI applications =========="
           grep -E \
-            '^CONFIG_PACKAGE_luci-app-(passwall|lucky|ddns-go|adguardhome|mwan3|sqm|upnp|ttyd|wol|nlbwmon|samba4|acme|natmap|watchcat)=y$' \
+            '^CONFIG_PACKAGE_luci-app-(passwall|lucky|adguardhome|mwan3|upnp|ttyd|wol|nlbwmon|samba4|watchcat)=y$' \
             .config || true
-
 
           if [ "$ERROR" -ne 0 ]; then
-
-            echo ""
-            echo "::error::One or more required packages are missing."
+            echo "::error::Package verification failed"
             exit 1
-
           fi
 
-
-      # ============================================================
-      # 13. 保存最终配置
-      # ============================================================
       - name: Save final config
         shell: bash
         run: |
+          set -e
           cp .config xg2010g-final.config
 
-          echo "Final config saved to xg2010g-final.config"
-
-
-      # ============================================================
-      # 14. 下载所有源码包
-      # ============================================================
       - name: Download packages
         shell: bash
         run: |
           set -e
-
           make download -j8
-
-          echo ""
-          echo "=============================================="
-          echo " Removing broken downloads"
-          echo "=============================================="
-
           find dl \
             -type f \
             -size -1024c \
             -print \
             -delete || true
 
-
-      # ============================================================
-      # 15. 查看剩余磁盘空间
-      # ============================================================
       - name: Check disk space
-        run: |
-          df -h
+        run: df -h
 
-
-      # ============================================================
-      # 16. 正式编译
-      #
-      # 第一次使用多线程。
-      # 如果失败，自动使用单线程 V=s 再编译一次，
-      # GitHub Actions 日志中就能看到具体错误。
-      # ============================================================
       - name: Build firmware
         shell: bash
         run: |
           set +e
-
           echo "=============================================="
           echo " Build XG2010G"
           echo "=============================================="
-
           make -j"$(nproc)"
-
           RESULT=$?
 
-
           if [ "$RESULT" -ne 0 ]; then
-
             echo ""
             echo "=============================================="
-            echo " Parallel build failed"
-            echo " Retry with make -j1 V=s"
+            echo " Parallel build failed - retry with V=s"
             echo "=============================================="
-
             make -j1 V=s
-
             RESULT=$?
-
           fi
-
 
           exit "$RESULT"
 
-
-      # ============================================================
-      # 17. 整理编译结果
-      # ============================================================
       - name: Prepare artifacts
         if: success()
         shell: bash
         run: |
           set -e
-
           TARGET_DIR="bin/targets/airoha/an7581"
 
           if [ ! -d "$TARGET_DIR" ]; then
-
-            echo "::error::Target directory not found:"
-            echo "$TARGET_DIR"
-
+            echo "::error::Target directory not found: $TARGET_DIR"
             exit 1
-
           fi
 
+          cp .config "$TARGET_DIR/xg2010g-final.config"
 
-          cp .config \
-            "$TARGET_DIR/xg2010g-final.config"
-
-
-          echo ""
-          echo "=============================================="
-          echo " Build output"
-          echo "=============================================="
-
+          echo "========== Build output =========="
           ls -lah "$TARGET_DIR"
 
-
           echo ""
-          echo "=============================================="
-          echo " XG2010G files"
-          echo "=============================================="
-
+          echo "========== XG2010G images =========="
           find "$TARGET_DIR" \
             -maxdepth 1 \
             -type f \
             -iname '*xg2010g*' \
             -print || true
 
+          echo ""
+          echo "========== Firmware manifests =========="
+          find "$TARGET_DIR" \
+            -maxdepth 1 \
+            -type f \
+            \( -name '*.manifest' -o -name '*packages*' \) \
+            -print || true
 
           echo ""
-          echo "=============================================="
-          echo " Generate custom SHA256"
-          echo "=============================================="
-
+          echo "========== SHA256 =========="
           cd "$TARGET_DIR"
-
           find . \
             -maxdepth 1 \
             -type f \
-            ! -name "SHA256SUMS.custom" \
+            ! -name 'SHA256SUMS.custom' \
             -print0 \
             | sort -z \
             | xargs -0 sha256sum \
             > SHA256SUMS.custom || true
-
           cat SHA256SUMS.custom || true
 
-
-      # ============================================================
-      # 18. 上传最终固件
-      # ============================================================
       - name: Upload XG2010G firmware
         if: success()
         uses: actions/upload-artifact@v4
@@ -745,10 +493,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-
-      # ============================================================
-      # 19. 如果失败，上传配置用于排查
-      # ============================================================
       - name: Upload failure config
         if: failure()
         uses: actions/upload-artifact@v4
